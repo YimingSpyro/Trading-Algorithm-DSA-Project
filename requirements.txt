@@ -1,0 +1,8 @@
+yfinance>=0.2.20
+pandas>=2.2.2
+matplotlib>=3.8.0
+streamlit
+fpdf>=1.7.2
+numpy
+reportlab
+pdfkit
