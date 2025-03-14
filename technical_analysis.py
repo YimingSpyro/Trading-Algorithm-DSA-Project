@@ -1,10 +1,16 @@
 import yfinance as yf
 from technical_indicators import calculate_indicators, define_signals
 from data_preprocessing import clean, get_analyst_ratings
+from datetime import datetime
 
-# Global cache (hash map) to store analysis results per ticker.
-# This allows us to reuse computed information when user preferences change.
+# Import CSV caching functions.
+from csv_db import initialize_db, read_stock_cache, update_stock_cache, update_technical_cache, read_technical_cache
+
+# Global in-memory cache to store analysis results per ticker.
 analysis_cache = {}
+
+# Initialize the CSV cache folder at startup.
+initialize_db()
 
 ###############################################
 # Helper Function: Calculate Average Sell Signals
@@ -41,7 +47,7 @@ def trading_strategy(data, avg_sell_signals, initial_amount=10000):
     buy_price = None
     sell_signal_count = 0
 
-    # Define a threshold based on the average sell signals
+    # Define a threshold based on the average sell signals.
     sell_threshold = avg_sell_signals / 2
 
     for i in range(len(data)):
@@ -88,17 +94,33 @@ def calculate_upside(current_price, target_price):
     return ((target_price - current_price) / current_price) * 100
 
 ###############################################
-# Main Analysis Function (with caching for dynamic programming)
+# Main Analysis Function (with CSV caching)
 ###############################################
 def analyze_stock(ticker):
-    # If the analysis for this ticker has already been computed, return it.
-    if ticker in analysis_cache:
-        return analysis_cache[ticker]
+    today_str = datetime.now().strftime('%Y-%m-%d')
     
-    # Download and clean data (10 years period)
+    # First check the in-memory cache.
+    if ticker in analysis_cache:
+        cached_result = analysis_cache[ticker]
+        if cached_result.get('Date') == today_str:
+            print(f"Using in-memory cache for {ticker} from {today_str}")
+            return cached_result
+
+    # Then check the summary CSV cache.
+    cached_csv = read_stock_cache(ticker)
+    if cached_csv and cached_csv.get('Date') == today_str:
+        print(f"Using CSV summary cache for {ticker} from {today_str}")
+        # Also read the technical data cache.
+        tech_cache = read_technical_cache(ticker)
+        if tech_cache:
+            cached_csv.update(tech_cache)
+        analysis_cache[ticker] = cached_csv
+        return cached_csv
+
+    # Download and clean data (10 years period).
     data = clean(yf.download(ticker, period='10y'))
     
-    # Check if data was downloaded successfully and is sufficient
+    # Check if data was downloaded successfully and is sufficient.
     if data.empty or len(data) < 252:
         result = {
             'Ticker': ticker,
@@ -109,51 +131,49 @@ def analyze_stock(ticker):
             'Average Return per Trade (%)': None,
             'Total Return (%)': None,
             'In Trade': None,
-            'Train Data': data,
-            'Test Data': data
+            'Date': today_str,
+            # For visualization, if data is insufficient, we still store the raw data.
+            'Train Data': None,
+            'Test Data': None
         }
         analysis_cache[ticker] = result
+        update_stock_cache(ticker, result)
         return result
     
-    # Split data into training and testing sets
-    train_data = data[:-252]
-    test_data = data[-252:]
-    
-    # Create copies to avoid modifying original data
-    train_data = train_data.copy()
-    test_data = test_data.copy()
+    # Split data into training and testing sets.
+    train_data = data[:-252].copy()
+    test_data = data[-252:].copy()
 
-    # Calculate technical indicators for both sets
+    # Calculate technical indicators for both sets.
     train_data['MACD'], train_data['Signal'], train_data['RSI'], train_data['Upper_Band'], train_data['Lower_Band'] = calculate_indicators(train_data)
     test_data['MACD'], test_data['Signal'], test_data['RSI'], test_data['Upper_Band'], test_data['Lower_Band'] = calculate_indicators(test_data)
 
-    # Define trading signals
+    # Define trading signals.
     train_data = define_signals(train_data)
     test_data = define_signals(test_data)
 
-    # Compute average sell signals for train and test data
-    avg_sell_signals_train = average_sell_signals(train_data)
+    # Compute average sell signals for test data.
     avg_sell_signals_test = average_sell_signals(test_data)
 
-    # Run the trading strategy on the test data
+    # Run the trading strategy on the test data.
     test_profits, test_final_balance, in_trade = trading_strategy(test_data, avg_sell_signals_test)
 
-    # Calculate performance metrics for the test period
+    # Calculate performance metrics for the test period.
     test_years = len(test_data) / 252
     test_total_trades, test_avg_return_per_trade, test_total_return, test_avg_annual_return = calculate_performance(
         test_profits, 10000, test_final_balance, test_years)
 
-    # Retrieve analyst ratings and target price
+    # Retrieve analyst ratings and target price.
     info = get_analyst_ratings(ticker)
     target_price = info.get('targetMeanPrice')
 
-    # Current price is now the last closing price of the entire dataset.
+    # Get the current price as the last closing price from the dataset.
     if data.empty or 'Close' not in data.columns or data['Close'].empty:
         current_price = None
     else:
         current_price = data['Close'].iloc[-1]
 
-    # Calculate potential upside only if both current and target prices are available
+    # Calculate potential upside if both current and target prices are available.
     if current_price is None or target_price is None:
         upside = None
     else:
@@ -162,6 +182,7 @@ def analyze_stock(ticker):
         except ValueError:
             upside = None
 
+    # Build the result (summary) dictionary.
     result = {
         'Ticker': ticker,
         'Current Price ($)': round(current_price, 2) if current_price is not None else None,
@@ -171,10 +192,18 @@ def analyze_stock(ticker):
         'Average Return per Trade (%)': round(test_avg_return_per_trade, 2) if test_avg_return_per_trade is not None else None,
         'Total Return (%)': round(test_total_return, 2) if test_total_return is not None else None,
         'In Trade': in_trade,
-        'Train Data': train_data,
-        'Test Data': test_data
+        'Date': today_str
     }
     
-    # Store the computed result in the cache for future use.
+    # Update caches:
+    # Save the summary information.
+    update_stock_cache(ticker, result)
+    # Save the technical (full DataFrame) data for visualization.
+    update_technical_cache(ticker, train_data, test_data)
+    
+    # Add the technical data to the result dictionary before caching in memory.
+    result['Train Data'] = train_data
+    result['Test Data'] = test_data
+    
     analysis_cache[ticker] = result
     return result
