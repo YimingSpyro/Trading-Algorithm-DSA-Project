@@ -53,14 +53,16 @@ def update_stock_cache(ticker, analysis_result):
             # Update the row if the analysis was already done today.
             df.iloc[-1] = pd.Series(analysis_result)
         else:
-            # Append a new row.
-            df = df.append(analysis_result, ignore_index=True)
+            # Append a new row using pd.concat instead of .append
+            new_row = pd.DataFrame([analysis_result])
+            df = pd.concat([df, new_row], ignore_index=True)
     else:
         # Create a new DataFrame for this ticker.
         df = pd.DataFrame([analysis_result])
     
     # Write the updated DataFrame to the CSV file.
     df.to_csv(path, index=False)
+
 
 #############################################
 # Functions for Technical Data Cache
