@@ -26,16 +26,16 @@ def file_exists(ticker):
     return os.path.exists(summary_file_path(ticker))
 
 def read_stock_cache(ticker):
-    """
-    Reads the cached summary analysis for the ticker from its CSV file.
-    Returns the last row as a dictionary or None if no data is found.
-    """
     if file_exists(ticker):
         df = pd.read_csv(summary_file_path(ticker))
         if not df.empty:
-            # Assumes that the last row contains the most recent analysis.
-            return df.iloc[-1].to_dict()
+            result = df.iloc[-1].to_dict()
+            # Remove keys that weren't meant to be stored in CSV.
+            result.pop('Train Data', None)
+            result.pop('Test Data', None)
+            return result
     return None
+
 
 def update_stock_cache(ticker, analysis_result):
     """
